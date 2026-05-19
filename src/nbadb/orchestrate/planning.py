@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from nbadb.orchestrate.extraction_contract import filter_full_extraction_entries
 from nbadb.orchestrate.staging_map import StagingEntry, get_by_pattern
 
 type PlanParams = dict[str, int | str]
@@ -195,7 +196,10 @@ def build_extraction_plan(
 
     plan: list[ExtractionPlanItem] = []
 
-    static_entries = get_by_pattern("static")
+    def get_runnable_by_pattern(pattern: str) -> list[StagingEntry]:
+        return filter_full_extraction_entries(get_by_pattern(pattern))
+
+    static_entries = get_runnable_by_pattern("static")
     if include_static and static_entries:
         plan.append(
             ExtractionPlanItem(
@@ -207,7 +211,9 @@ def build_extraction_plan(
             )
         )
 
-    season_entries = [e for e in get_by_pattern("season") if e.endpoint_name != "league_game_log"]
+    season_entries = [
+        e for e in get_runnable_by_pattern("season") if e.endpoint_name != "league_game_log"
+    ]
     if season_entries and seasons:
         for grouped_entries, start_year, grouped_season_types in _group_historical_entries(
             season_entries, season_types
@@ -229,7 +235,7 @@ def build_extraction_plan(
                 )
             )
 
-    game_entries = get_by_pattern("game")
+    game_entries = get_runnable_by_pattern("game")
     if game_entries and game_ids:
         plan.append(
             ExtractionPlanItem(
@@ -241,7 +247,7 @@ def build_extraction_plan(
             )
         )
 
-    player_entries = get_by_pattern("player")
+    player_entries = get_runnable_by_pattern("player")
     if player_entries and player_ids:
         plan.append(
             ExtractionPlanItem(
@@ -253,7 +259,7 @@ def build_extraction_plan(
             )
         )
 
-    team_entries = get_by_pattern("team")
+    team_entries = get_runnable_by_pattern("team")
     if team_entries and team_ids:
         general_team_entries = [
             entry
@@ -285,7 +291,7 @@ def build_extraction_plan(
                 )
             )
 
-    player_season_entries = get_by_pattern("player_season")
+    player_season_entries = get_runnable_by_pattern("player_season")
     if player_season_entries and player_ids and seasons:
         for grouped_entries, start_year, grouped_season_types in _group_historical_entries(
             player_season_entries, season_types
@@ -307,7 +313,7 @@ def build_extraction_plan(
                 )
             )
 
-    team_season_entries = get_by_pattern("team_season")
+    team_season_entries = get_runnable_by_pattern("team_season")
     if team_season_entries and team_ids and seasons:
         for grouped_entries, start_year, grouped_season_types in _group_historical_entries(
             team_season_entries, season_types
@@ -329,7 +335,7 @@ def build_extraction_plan(
                 )
             )
 
-    player_team_season_entries = get_by_pattern("player_team_season")
+    player_team_season_entries = get_runnable_by_pattern("player_team_season")
     if player_team_season_entries and player_team_season_params:
         supported_cross_product_entries = [
             entry
@@ -359,7 +365,7 @@ def build_extraction_plan(
                 )
             )
 
-    date_entries = get_by_pattern("date")
+    date_entries = get_runnable_by_pattern("date")
     if date_entries and game_dates:
         plan.append(
             ExtractionPlanItem(

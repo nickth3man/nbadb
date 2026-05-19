@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, cast
 import duckdb
 
 from nbadb.core.types import SeasonType, validate_sql_identifier
+from nbadb.orchestrate.extraction_contract import filter_full_extraction_entries
 from nbadb.orchestrate.planning import (
     PATTERN_PRIORITY,
     PLAYER_TEAM_SEASON_WORKLOAD_ENDPOINTS,
@@ -933,7 +934,7 @@ class BackfillPlanner:
             if patterns and entry.param_pattern not in patterns:
                 continue
             result.append(entry)
-        return result
+        return filter_full_extraction_entries(result)
 
     @classmethod
     def _build_params_for_pattern(

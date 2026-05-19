@@ -174,6 +174,25 @@ class TestBuildExtractionPlan:
             {"season": "2024-25", "season_type": "Playoffs"},
         ]
 
+    def test_excludes_known_full_extraction_blockers(self) -> None:
+        season_entries = [_entry("league_standings"), _entry("shot_chart_lineup_detail")]
+
+        def _entries(pattern: str):
+            return season_entries if pattern == "season" else []
+
+        with patch(_GET_BY_PATTERN, side_effect=_entries):
+            plan = build_extraction_plan(
+                seasons=["2024-25"],
+                game_ids=[],
+                player_ids=[],
+                team_ids=[],
+                game_dates=[],
+                season_types=["Regular Season"],
+            )
+
+        assert len(plan) == 1
+        assert [entry.endpoint_name for entry in plan[0].entries] == ["league_standings"]
+
     def test_isolates_current_team_only_team_endpoints(self) -> None:
         team_entries = [
             _entry("common_team_roster"),
@@ -200,7 +219,6 @@ class TestBuildExtractionPlan:
         assert plan[0].params == [{"team_id": 10}, {"team_id": 20}, {"team_id": 30}]
         assert [entry.endpoint_name for entry in plan[1].entries] == [
             "team_details",
-            "team_historical_leaders",
             "team_info_common",
         ]
         assert plan[1].params == [{"team_id": 20}, {"team_id": 30}]

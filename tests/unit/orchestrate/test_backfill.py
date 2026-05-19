@@ -368,6 +368,18 @@ class TestBackfillPlannerBuildPlan:
         all_endpoints = {e.endpoint_name for item in plan.items for e in item.entries}
         assert all_endpoints == {"league_game_log"}
 
+    def test_endpoint_filter_excludes_known_full_extraction_blockers(
+        self,
+        planner: BackfillPlanner,
+    ) -> None:
+        plan = planner.build_plan(
+            endpoints=["shot_chart_lineup_detail"],
+            seasons=["2024-25"],
+        )
+
+        assert plan.total_tasks == 0
+        assert plan.endpoints == []
+
     def test_force_resets_journal(
         self,
         journal: PipelineJournal,
