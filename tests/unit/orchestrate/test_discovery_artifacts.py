@@ -86,3 +86,72 @@ def test_discovery_artifact_store_returns_none_when_unavailable() -> None:
     scope = DiscoveryArtifactScope(kind="league_game_log")
 
     assert store.load_frame(scope) is None
+
+
+def test_load_game_log_partial_returns_only_cached_combos(tmp_path) -> None:
+    store = DiscoveryArtifactStore.from_duckdb_path(tmp_path / "planner.duckdb")
+    # Persist only Regular Season; Playoffs is absent.
+    store.upsert_game_log_combo_frames(
+        {
+            ("2024-25", "Regular Season"): pl.DataFrame(
+                {"game_id": ["001"], "game_date": ["2024-10-22"]}
+            ),
+        },
+        provenance="partial-discovery",
+    )
+
+    scope = DiscoveryArtifactScope(
+        kind="league_game_log",
+        seasons=("2024-25",),
+        season_types=("Regular Season", "Playoffs"),
+    )
+    result = store.load_game_log_partial(scope)
+
+    assert set(result.keys()) == {("2024-25", "Regular Season")}
+    assert result[("2024-25", "Regular Season")].to_dicts() == [
+        {"game_id": "001", "game_date": "2024-10-22"}
+    ]
+
+
+def test_load_game_log_partial_returns_empty_dict_when_nothing_cached(tmp_path) -> None:
+    store = DiscoveryArtifactStore.from_duckdb_path(tmp_path / "planner.duckdb")
+    scope = DiscoveryArtifactScope(
+        kind="league_game_log",
+        seasons=("2024-25",),
+        season_types=("Regular Season", "Playoffs"),
+    )
+
+    assert store.load_game_log_partial(scope) == {}
+
+
+def test_load_game_log_partial_returns_empty_dict_when_store_unavailable() -> None:
+    store = DiscoveryArtifactStore.from_duckdb_path(None)
+    scope = DiscoveryArtifactScope(
+        kind="league_game_log",
+        seasons=("2024-25",),
+        season_types=("Regular Season",),
+    )
+
+    assert store.load_game_log_partial(scope) == {}
+
+
+def test_load_game_log_partial_returns_all_combos_when_all_cached(tmp_path) -> None:
+    store = DiscoveryArtifactStore.from_duckdb_path(tmp_path / "planner.duckdb")
+    store.upsert_game_log_combo_frames(
+        {
+            ("2024-25", "Regular Season"): pl.DataFrame(
+                {"game_id": ["001"], "game_date": ["2024-10-22"]}
+            ),
+            ("2024-25", "Playoffs"): pl.DataFrame(),
+        },
+        provenance="partial-discovery",
+    )
+
+    scope = DiscoveryArtifactScope(
+        kind="league_game_log",
+        seasons=("2024-25",),
+        season_types=("Regular Season", "Playoffs"),
+    )
+    result = store.load_game_log_partial(scope)
+
+    assert set(result.keys()) == {("2024-25", "Regular Season"), ("2024-25", "Playoffs")}

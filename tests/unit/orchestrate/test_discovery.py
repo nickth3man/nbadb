@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+from typing import cast
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
 
+from nbadb.core.config import NbaDbSettings
 from nbadb.core.errors import ExtractionError, TransientError
 from nbadb.orchestrate.discovery import (
     _CONCURRENT_DISCOVERY_TIMEOUT,
     EntityDiscovery,
     GameDiscoveryResult,
     PlayerTeamSeasonDiscoveryResult,
+    _exception_chain,
     _extract_with_retry,
 )
 
@@ -41,6 +44,13 @@ def _fast_retry(monkeypatch):
 
 
 class TestExtractWithRetry:
+    def test_exception_chain_includes_wrapped_cause(self):
+        cause = TimeoutError("read timed out")
+        exc = TransientError("wrapped")
+        exc.__cause__ = cause
+
+        assert _exception_chain(exc) == "TransientError: wrapped <- TimeoutError: read timed out"
+
     def test_retries_transient_error_then_succeeds_without_async_plugin(self):
         ext = MagicMock()
         df = pl.DataFrame({"a": [1]})
@@ -375,7 +385,7 @@ class TestDiscoverPlayerTeamSeasonParams:
             patch("nbadb.orchestrate.discovery._reset_nba_stats_session") as reset_session,
             patch("nbadb.orchestrate.discovery._sync_extract", side_effect=_side_effect),
         ):
-            disc = EntityDiscovery(reg, settings=settings)
+            disc = EntityDiscovery(reg, settings=cast(NbaDbSettings, settings))
             result = await disc.discover_player_team_season_params(["2024-25", "2025-26"])
 
         assert result == [
@@ -470,7 +480,7 @@ class TestDiscoverPlayerTeamSeasonParams:
             extract_retry_base_delay=0.0,
         )
         with patch("nbadb.orchestrate.discovery._sync_extract", side_effect=_side_effect):
-            disc = EntityDiscovery(reg, settings=settings)
+            disc = EntityDiscovery(reg, settings=cast(NbaDbSettings, settings))
             result = await disc.discover_player_team_season_params(["2024-25", "2025-26"])
 
         assert result == [
@@ -522,7 +532,7 @@ class TestDiscoverPlayerTeamSeasonParams:
             patch("nbadb.orchestrate.discovery._reset_nba_stats_session") as reset_session,
             patch("nbadb.orchestrate.discovery._sync_extract", side_effect=_side_effect),
         ):
-            disc = EntityDiscovery(reg, settings=settings)
+            disc = EntityDiscovery(reg, settings=cast(NbaDbSettings, settings))
             result = await disc.discover_player_team_season_params(["2024-25", "2025-26"])
 
         assert result == [
@@ -539,11 +549,13 @@ class TestDiscoverPlayerTeamSeasonParams:
                 "season_type": "Regular Season",
             },
         ]
+        # With concurrent cap=2: 2 concurrent + 2 recovery wave1 attempts = 4 calls
         assert call_counts == {
             "2024-25": 4,
             "2025-26": 1,
         }
-        assert reset_session.call_count == 2
+        # One recovery wave triggers one session reset
+        assert reset_session.call_count == 1
 
     async def test_uses_shorter_timeout_during_concurrent_season_sweep(self):
         call_kwargs: list[dict[str, object]] = []
@@ -566,7 +578,7 @@ class TestDiscoverPlayerTeamSeasonParams:
             extract_retry_base_delay=0.0,
         )
         with patch("nbadb.orchestrate.discovery._sync_extract", side_effect=_side_effect):
-            disc = EntityDiscovery(reg, settings=settings)
+            disc = EntityDiscovery(reg, settings=cast(NbaDbSettings, settings))
             result = await disc.discover_player_team_season_params(["2024-25"])
 
         assert result == [
@@ -579,11 +591,9 @@ class TestDiscoverPlayerTeamSeasonParams:
         ]
         assert [kwargs.get("timeout") for kwargs in call_kwargs] == [
             _CONCURRENT_DISCOVERY_TIMEOUT,
-            None,
+            _CONCURRENT_DISCOVERY_TIMEOUT,
             None,
         ]
-
-    async def test_expands_player_team_season_params_across_requested_season_types(self):
         class _Ext:
             pass
 
@@ -613,6 +623,29 @@ class TestDiscoverPlayerTeamSeasonParams:
                 "season_type": "Playoffs",
             },
         ]
+
+    async def test_static_player_fallback_marks_season_covered_without_pairs(self):
+        class _Ext:
+            pass
+
+        reg = MagicMock()
+        reg.get.return_value = _Ext
+        with patch(
+            "nbadb.orchestrate.discovery._sync_extract",
+            return_value=pl.DataFrame({"person_id": [1], "team_id": [None]}),
+        ) as sync_extract:
+            disc = EntityDiscovery(reg)
+            result = await disc.discover_player_team_season_params_result(
+                ["2024-25"],
+                season_types=["Regular Season", "Playoffs"],
+            )
+
+        assert sync_extract.call_count == 1
+        assert result.params == []
+        assert result.covered_pairs == {
+            ("2024-25", "Regular Season"),
+            ("2024-25", "Playoffs"),
+        }
 
 
 class TestDiscoverTeamIds:
@@ -806,7 +839,7 @@ class TestDiscoverGameIds:
             extract_retry_base_delay=0.0,
         )
         with patch("nbadb.orchestrate.discovery._sync_extract", side_effect=_side_effect):
-            disc = EntityDiscovery(reg, settings=settings)
+            disc = EntityDiscovery(reg, settings=cast(NbaDbSettings, settings))
             ids, combined = await disc.discover_game_ids(["2024-25"])
         assert ids == ["001"]
         assert combined.shape[0] == 1
@@ -877,7 +910,7 @@ class TestDiscoverGameIds:
             extract_retry_base_delay=0.0,
         )
         with patch("nbadb.orchestrate.discovery._sync_extract", side_effect=_side_effect):
-            disc = EntityDiscovery(reg, settings=settings)
+            disc = EntityDiscovery(reg, settings=cast(NbaDbSettings, settings))
             ids, combined = await disc.discover_game_ids(
                 ["2024-25"],
                 on_progress=progress,
@@ -922,7 +955,7 @@ class TestDiscoverGameIds:
             patch("nbadb.orchestrate.discovery._reset_nba_stats_session") as reset_session,
             patch("nbadb.orchestrate.discovery._sync_extract", side_effect=_side_effect),
         ):
-            disc = EntityDiscovery(reg, settings=settings)
+            disc = EntityDiscovery(reg, settings=cast(NbaDbSettings, settings))
             ids, combined = await disc.discover_game_ids(
                 ["2024-25"],
                 on_progress=progress,
@@ -935,13 +968,11 @@ class TestDiscoverGameIds:
             ("2024-25", "Regular Season"): 4,
             ("2024-25", "Playoffs"): 1,
         }
-        assert progress.start_pattern.call_args_list[2].args == (
-            "game discovery recovery wave 2 (1 combos)",
+        assert progress.start_pattern.call_args_list[1].args == (
+            "game discovery recovery (1 combos)",
             1,
         )
-        assert reset_session.call_count == 2
-
-    async def test_keeps_total_recovery_budget_across_later_recovery_wave(self):
+        assert reset_session.call_count == 1
         call_counts: dict[tuple[str, str], int] = {}
 
         def _side_effect(*_args, **kwargs):
@@ -967,7 +998,7 @@ class TestDiscoverGameIds:
             patch("nbadb.orchestrate.discovery._reset_nba_stats_session") as reset_session,
             patch("nbadb.orchestrate.discovery._sync_extract", side_effect=_side_effect),
         ):
-            disc = EntityDiscovery(reg, settings=settings)
+            disc = EntityDiscovery(reg, settings=cast(NbaDbSettings, settings))
             ids, combined = await disc.discover_game_ids(
                 ["2024-25"],
                 on_progress=progress,
@@ -977,7 +1008,7 @@ class TestDiscoverGameIds:
         assert ids == ["002"]
         assert combined.shape[0] == 1
         assert call_counts == {
-            ("2024-25", "Regular Season"): 4,
+            ("2024-25", "Regular Season"): 5,
             ("2024-25", "Playoffs"): 1,
         }
         assert progress.start_pattern.call_args_list[2].args == (
@@ -985,8 +1016,6 @@ class TestDiscoverGameIds:
             1,
         )
         assert reset_session.call_count == 2
-
-    async def test_uses_shorter_timeout_during_concurrent_game_sweep(self):
         call_kwargs: list[dict[str, object]] = []
 
         def _side_effect(*_args, **kwargs):
@@ -1007,7 +1036,7 @@ class TestDiscoverGameIds:
             extract_retry_base_delay=0.0,
         )
         with patch("nbadb.orchestrate.discovery._sync_extract", side_effect=_side_effect):
-            disc = EntityDiscovery(reg, settings=settings)
+            disc = EntityDiscovery(reg, settings=cast(NbaDbSettings, settings))
             ids, combined = await disc.discover_game_ids(
                 ["2024-25"],
                 season_types=["Regular Season"],
@@ -1017,7 +1046,7 @@ class TestDiscoverGameIds:
         assert combined.shape[0] == 1
         assert [kwargs.get("timeout") for kwargs in call_kwargs] == [
             _CONCURRENT_DISCOVERY_TIMEOUT,
-            None,
+            _CONCURRENT_DISCOVERY_TIMEOUT,
             None,
         ]
 
@@ -1056,3 +1085,62 @@ class TestDiscoverGameIds:
             await disc.discover_game_ids(["2024-25"], on_progress=progress)
         progress.start_pattern.assert_called_once()
         progress.advance_pattern.assert_called_once_with(success=True)
+
+    async def test_known_combos_are_skipped_and_injected(self):
+        """Combos supplied via known_combos are not fetched from the API."""
+        call_args: list[dict] = []
+
+        def _side_effect(*_args, **kwargs):
+            call_args.append(kwargs.copy())
+            return pl.DataFrame({"game_id": ["002"]})
+
+        class _Ext:
+            pass
+
+        reg = MagicMock()
+        reg.get.return_value = _Ext
+        known = {
+            ("2023-24", "Regular Season"): pl.DataFrame({"game_id": ["001"]}),
+        }
+        with patch("nbadb.orchestrate.discovery._sync_extract", side_effect=_side_effect):
+            disc = EntityDiscovery(reg)
+            result = await disc.discover_game_ids_result(
+                ["2023-24", "2024-25"],
+                season_types=["Regular Season"],
+                known_combos=known,
+            )
+
+        # Only the non-known combo should have been fetched.
+        assert len(call_args) == 1
+        assert call_args[0]["season"] == "2024-25"
+        # Both game IDs should appear in the result.
+        assert "001" in result.game_ids
+        assert "002" in result.game_ids
+        # Both combos should be marked as covered.
+        assert ("2023-24", "Regular Season") in result.covered_combos
+        assert ("2024-25", "Regular Season") in result.covered_combos
+        assert result.is_complete is True
+
+    async def test_known_combos_progress_pre_advanced(self):
+        """Progress bar is pre-advanced for known_combos at start_pattern time."""
+        df = pl.DataFrame({"game_id": ["002"]})
+
+        class _Ext:
+            pass
+
+        reg = MagicMock()
+        reg.get.return_value = _Ext
+        progress = MagicMock()
+        known = {("2023-24", "Regular Season"): pl.DataFrame({"game_id": ["001"]})}
+        with patch("nbadb.orchestrate.discovery._sync_extract", return_value=df):
+            disc = EntityDiscovery(reg)
+            await disc.discover_game_ids_result(
+                ["2023-24", "2024-25"],
+                season_types=["Regular Season"],
+                known_combos=known,
+                on_progress=progress,
+            )
+        # Total should be 2 (full combo count), pre-advanced once for the known combo
+        # and once more for the fetched combo.
+        progress.start_pattern.assert_called_once_with("game discovery (2 combos)", 2)
+        assert progress.advance_pattern.call_count == 2

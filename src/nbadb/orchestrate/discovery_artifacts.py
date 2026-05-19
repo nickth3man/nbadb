@@ -100,6 +100,38 @@ class DiscoveryArtifactStore:
             return pl.DataFrame()
         return pl.concat(non_empty_frames, how="diagonal_relaxed")
 
+    def load_game_log_partial(
+        self, scope: DiscoveryArtifactScope
+    ) -> dict[tuple[str, str], pl.DataFrame]:
+        """Return per-combo cached frames for all combos that are available.
+
+        Unlike :meth:`load_game_log_frame`, this does **not** return ``None`` when
+        some combos are missing.  Callers receive a mapping of
+        ``(season, season_type) -> DataFrame`` only for the combos that are already
+        persisted on disk; missing combos are simply absent from the dict.
+
+        Returns an empty dict when the store is unavailable or the scope is not a
+        ``league_game_log`` scope with both ``seasons`` and ``season_types``.
+        """
+        if not self.is_available():
+            return {}
+        if scope.kind != "league_game_log" or not scope.seasons or not scope.season_types:
+            return {}
+
+        result: dict[tuple[str, str], pl.DataFrame] = {}
+        for season in scope.seasons:
+            for season_type in scope.season_types:
+                combo_scope = DiscoveryArtifactScope(
+                    kind="league_game_log",
+                    seasons=(season,),
+                    season_types=(season_type,),
+                    variant=scope.variant,
+                )
+                frame = self.load_frame(combo_scope)
+                if frame is not None:
+                    result[(season, season_type)] = frame
+        return result
+
     def upsert_frame(
         self,
         scope: DiscoveryArtifactScope,

@@ -34,8 +34,8 @@ class _PatternProgress(Protocol):
 _RETRY_ATTEMPTS = 3
 _RETRY_DELAY = 2.0  # seconds between retries
 _DISCOVERY_CONCURRENCY = 10
-_CONCURRENT_DISCOVERY_ATTEMPTS_CAP = 1
-_CONCURRENT_DISCOVERY_TIMEOUT = (3.05, 10.0)
+_CONCURRENT_DISCOVERY_ATTEMPTS_CAP = 2
+_CONCURRENT_DISCOVERY_TIMEOUT = (3.05, 15.0)
 _SERIAL_DISCOVERY_RECOVERY_WAVES = 2
 
 
@@ -66,6 +66,21 @@ class PlayerTeamSeasonDiscoveryResult:
 def _reset_nba_stats_session() -> None:
     """Drop the shared nba_api session so recovery starts from a fresh client."""
     NBAStatsHTTP.set_session(None)
+
+
+def _exception_chain(exc: BaseException) -> str:
+    """Return a compact exception chain for discovery diagnostics."""
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        message = str(current)
+        parts.append(
+            f"{type(current).__name__}: {message}" if message else type(current).__name__
+        )
+        current = current.__cause__ or current.__context__
+    return " <- ".join(parts)
 
 
 async def _extract_with_retry(
@@ -122,7 +137,7 @@ async def _extract_with_retry(
                     label,
                     attempt,
                     attempts,
-                    type(exc).__name__,
+                    _exception_chain(exc),
                     delay,
                 )
                 await asyncio.sleep(delay)
@@ -131,7 +146,7 @@ async def _extract_with_retry(
                     "{}: all {} attempts failed: {}",
                     label,
                     attempts,
-                    type(exc).__name__,
+                    _exception_chain(exc),
                 )
                 if isinstance(exc, TransientError):
                     raise
@@ -165,6 +180,7 @@ class EntityDiscovery:
         seasons: list[str],
         on_progress: _PatternProgress | None = None,
         season_types: list[str] | None = None,
+        known_combos: dict[tuple[str, str], pl.DataFrame] | None = None,
     ) -> GameDiscoveryResult:
         """Extract league_game_log for given seasons and season_types.
 
@@ -178,6 +194,11 @@ class EntityDiscovery:
         Seasons are fetched concurrently (up to ``_DISCOVERY_CONCURRENCY``
         in-flight at once). Each season failure is isolated -- it does not
         cancel the remaining seasons.
+
+        *known_combos* is an optional mapping of ``(season, season_type) ->
+        DataFrame`` for combos that are already cached and should be skipped
+        during the concurrent fetch phase.  Their frames are injected directly
+        into the result, reducing the number of API calls on resume.
         """
         import polars as pl
 
@@ -187,8 +208,14 @@ class EntityDiscovery:
         extractor_cls = self._registry.get("league_game_log")
 
         combos = [(s, st) for s in seasons for st in season_types]
+        known = known_combos or {}
+        combos_to_fetch = [c for c in combos if c not in known]
         if on_progress is not None:
             on_progress.start_pattern(f"game discovery ({len(combos)} combos)", len(combos))
+            # Pre-advance the progress bar for already-cached combos so the
+            # display reflects the true total from the start.
+            for _ in range(len(combos) - len(combos_to_fetch)):
+                on_progress.advance_pattern(success=True)
 
         semaphore = asyncio.Semaphore(self._discovery_concurrency)
 
@@ -238,7 +265,7 @@ class EntityDiscovery:
                         if phase == "recovering"
                         else "failed to extract game log for {}: {}"
                     )
-                    logger.error(message, label, type(exc).__name__)
+                    logger.error(message, label, _exception_chain(exc))
                     if progress is not None:
                         progress.advance_pattern(success=False)
                     return (season, season_type), None, False
@@ -266,13 +293,18 @@ class EntityDiscovery:
                     use_semaphore=True,
                     phase="discovering",
                 )
-                for season, season_type in combos
+                for season, season_type in combos_to_fetch
             ]
         )
 
         combo_frames: dict[tuple[str, str], pl.DataFrame] = {
             combo: df for combo, df, success in initial_results if success and df is not None
         }
+        # Inject pre-cached frames from known_combos so they participate in
+        # the final merge and coverage calculation.
+        for combo, df in known.items():
+            if combo in set(combos):
+                combo_frames.setdefault(combo, df)
         failed_combos = [combo for combo, _df, success in initial_results if not success]
 
         if failed_combos:
@@ -579,8 +611,19 @@ class EntityDiscovery:
                     .unique()
                 )
                 if normalized.is_empty():
-                    logger.warning("no valid player/team pairs returned for {}", season)
-                    return season, None, False
+                    team_ids = df.get_column("team_id")
+                    if team_ids.null_count() != df.height:
+                        logger.warning("no valid player/team pairs returned for {}", season)
+                        return season, None, False
+                    logger.warning(
+                        "no valid player/team pairs returned for {}; marking season covered "
+                        "with no player/team pairs",
+                        season,
+                    )
+                    empty = pl.DataFrame(
+                        schema={"player_id": pl.Int64, "team_id": pl.Int64, "season": pl.Utf8}
+                    )
+                    return season, empty, True
 
                 return season, normalized, True
 
