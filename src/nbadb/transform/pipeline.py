@@ -48,6 +48,7 @@ class TransformResult:
 
 class _ProgressReporter(Protocol):
     def advance_pattern(self, *, success: bool = True, rows: int = 0) -> None: ...
+    def update_phase_info(self, info: str) -> None: ...
 
 
 def _table_name_from_schema_class(
@@ -339,6 +340,10 @@ class TransformPipeline:
                         )
 
                 self._metrics.start_transformer(table)
+                if on_progress is not None:
+                    on_progress.update_phase_info(
+                        f"transforming {table} ({transformer.__class__.__name__})"
+                    )
                 try:
                     transformer._conn = self._conn
                     # SqlTransformers execute SQL directly via conn; skip dict construction

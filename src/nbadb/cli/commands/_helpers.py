@@ -125,10 +125,14 @@ def _print_result(
 ) -> None:
     """Display a human-readable summary of a pipeline run."""
     duration = fmt_time(result.duration_seconds)
-    typer.echo(
-        f"\n🏀 {mode} complete in {duration}\n"
-        f"  {result.tables_updated} tables | {result.rows_total:,} rows"
-    )
+    parts = [f"\n🏀 {mode} complete in {duration}"]
+    parts.append(f"  {result.tables_updated} tables | {result.rows_total:,} rows")
+    if result.discovery_duration > 0:
+        discovery = fmt_time(result.discovery_duration)
+        extraction = fmt_time(result.extraction_duration)
+        transform = fmt_time(result.transform_duration)
+        parts.append(f"  phases: 🔍 {discovery} → ⛏ {extraction} → 🔄 {transform}")
+    typer.echo("\n".join(parts))
 
     # Extraction stats from summary
     if summary and summary.totals:
@@ -212,6 +216,11 @@ def _write_gh_step_summary(
     lines.append(
         f"**{result.tables_updated} tables** | **{result.rows_total:,} rows** | **{duration}**"
     )
+    if result.discovery_duration > 0:
+        d = fmt_time(result.discovery_duration)
+        e = fmt_time(result.extraction_duration)
+        t = fmt_time(result.transform_duration)
+        lines.append(f"*Phases: discovery {d} → extraction {e} → transform {t}*")
     lines.append("")
 
     if summary and summary.patterns:
@@ -348,6 +357,10 @@ def _run_pipeline(
             typer.echo(f"{mode}: stopped — progress saved in journal (resume-safe)", err=True)
             raise typer.Exit(0)
         result = cast("Any", result_obj)
+        if summary:
+            summary.discovery_duration = result.discovery_duration
+            summary.extraction_duration = result.extraction_duration
+            summary.transform_duration = result.transform_duration
     else:
         from nbadb.cli.progress import CIProgress
 
@@ -403,6 +416,10 @@ def _run_pipeline(
                 summary = progress.export_summary()
             except Exception as exc:
                 logger.debug("Failed to export progress summary: {}", exc)
+        if summary and result:
+            summary.discovery_duration = result.discovery_duration
+            summary.extraction_duration = result.extraction_duration
+            summary.transform_duration = result.transform_duration
 
     _print_result(mode, result, summary=summary, settings=settings)
     if result.failed_extractions and result.tables_updated == 0 and result.rows_total == 0:

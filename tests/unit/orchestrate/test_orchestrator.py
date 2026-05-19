@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import cast
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,12 +11,14 @@ import duckdb
 import polars as pl
 import pytest
 
+from nbadb.core.db import DBManager
 from nbadb.orchestrate.discovery import GameDiscoveryResult, PlayerTeamSeasonDiscoveryResult
 from nbadb.orchestrate.discovery_artifacts import DiscoveryArtifactScope
 from nbadb.orchestrate.orchestrator import (
     ExtractionOutcome,
     Orchestrator,
     PipelineResult,
+    _DiscoveryService,
     _apply_player_shard,
 )
 
@@ -264,7 +267,7 @@ class TestDiscoverEntities:
 
         game_ids, _player_ids, _team_ids, game_dates, game_log_df = asyncio.run(
             orch._discover_entities(
-                mock_discovery,
+                cast(_DiscoveryService, mock_discovery),
                 ["2024-25"],
                 bound_log,
                 include_games=True,
@@ -286,6 +289,63 @@ class TestDiscoverEntities:
         assert game_dates == ["2024-10-22"]
         assert game_log_df.shape == (1, 2)
         assert cached is None
+
+    def test_passes_partial_cached_combos_to_discovery_service(self, tmp_path):
+        """When only some combos are cached, _discover_entities passes them as known_combos."""
+        settings = _mock_settings()
+        settings.duckdb_path = tmp_path / "nba.duckdb"
+        orch = Orchestrator(settings=settings)
+        bound_log = MagicMock()
+
+        # Pre-persist one combo (Regular Season) but not Playoffs.
+        artifact_store = orch._discovery_artifacts()
+        artifact_store.upsert_game_log_combo_frames(
+            {
+                ("2024-25", "Regular Season"): pl.DataFrame(
+                    {"game_id": ["001"], "game_date": ["2024-10-22"]}
+                ),
+            },
+            provenance="partial-discovery",
+        )
+
+        received_known_combos: dict | None = None
+
+        class _Discovery:
+            async def discover_game_ids_result(self, *_args, **kwargs):
+                nonlocal received_known_combos
+                received_known_combos = kwargs.get("known_combos")
+                return GameDiscoveryResult(
+                    game_ids=["001", "002"],
+                    raw=pl.DataFrame(
+                        {"game_id": ["001", "002"], "game_date": ["2024-10-22", "2024-11-01"]}
+                    ),
+                    requested_combos=frozenset(
+                        {("2024-25", "Regular Season"), ("2024-25", "Playoffs")}
+                    ),
+                    covered_combos=frozenset(
+                        {("2024-25", "Regular Season"), ("2024-25", "Playoffs")}
+                    ),
+                )
+
+            async def discover_game_dates(self, game_log_df):
+                return game_log_df.get_column("game_date").to_list()
+
+        asyncio.run(
+            orch._discover_entities(
+                cast(_DiscoveryService, _Discovery()),
+                ["2024-25"],
+                bound_log,
+                include_games=True,
+                include_players=False,
+                include_teams=False,
+                include_dates=True,
+                season_types=["Regular Season", "Playoffs"],
+            )
+        )
+
+        assert received_known_combos is not None
+        assert ("2024-25", "Regular Season") in received_known_combos
+        assert ("2024-25", "Playoffs") not in received_known_combos
 
     def test_reuses_partial_game_discovery_artifacts_for_covered_narrower_scope(self, tmp_path):
         settings = _mock_settings()
@@ -317,7 +377,7 @@ class TestDiscoverEntities:
 
         asyncio.run(
             orch._discover_entities(
-                _Discovery(),
+                cast(_DiscoveryService, _Discovery()),
                 ["2024-25"],
                 bound_log,
                 include_games=True,
@@ -772,7 +832,7 @@ class TestRunInit:
         ):
             result = asyncio.run(orch.run_init())
 
-        mock_load.assert_called_once_with(db)
+        mock_load.assert_called_once_with(db, pp=None)
         assert mock_transform.call_args.args[1] is recovered_raw
         assert result.tables_updated == 1
 
@@ -826,7 +886,7 @@ class TestRunInit:
         ):
             asyncio.run(orch.run_init())
 
-        mock_load.assert_called_once_with(db)
+        mock_load.assert_called_once_with(db, pp=None)
         assert mock_transform.call_args.args[1] == {"stg_league_game_log": game_log_df}
 
 
@@ -838,11 +898,11 @@ class TestPersistStagingToDuckdb:
 
         try:
             orch._persist_staging_to_duckdb(
-                db,
+                cast(DBManager, db),
                 {"stg_sample": pl.DataFrame({"game_id": ["001"], "value": [1]})},
             )
             orch._persist_staging_to_duckdb(
-                db,
+                cast(DBManager, db),
                 {"stg_sample": pl.DataFrame({"game_id": ["001", "002"], "value": [1, 2]})},
             )
 
@@ -859,11 +919,11 @@ class TestPersistStagingToDuckdb:
 
         try:
             orch._persist_staging_to_duckdb(
-                db,
+                cast(DBManager, db),
                 {"stg_sample": pl.DataFrame({"game_id": ["001", "001"], "value": [1, 1]})},
             )
             orch._persist_staging_to_duckdb(
-                db,
+                cast(DBManager, db),
                 {"stg_sample": pl.DataFrame({"game_id": ["001", "001"], "value": [1, 1]})},
             )
 
@@ -1056,6 +1116,7 @@ class TestRunDaily:
         assert mock_discovery.discover_game_ids_result.await_args.kwargs["season_types"] == (
             expected_season_types
         )
+        assert mock_extract.await_args is not None
         assert mock_extract.await_args.kwargs["season_types"] == expected_season_types
         assert result.tables_updated == 3
         assert result.rows_total == 75
@@ -1097,6 +1158,7 @@ class TestRunDaily:
         ):
             asyncio.run(orch.run_daily())
 
+        assert mock_extract.await_args is not None
         assert mock_extract.await_args.kwargs["include_static"] is False
 
     def test_run_daily_loads_persisted_staging_when_extraction_is_empty(self):
@@ -1532,6 +1594,7 @@ class TestRunFull:
             "include_exhausted": True,
             "include_abandoned": True,
         }
+        assert mock_extract.await_args is not None
         assert mock_extract.await_args.kwargs["skip_items"] == {
             ("ep1", '{"season": "2024-25"}'),
         }

@@ -192,6 +192,9 @@ class ExtractorRunner:
         self.planned_calls: int = 0
         # Count of extraction calls that failed in the current run after retries.
         self.failed_current_run: int = 0
+        # Periodic latency check counter
+        self._latency_check_counter: int = 0
+        self._latency_check_interval: int = 50
 
     def shutdown(self) -> None:
         """Shut down the thread pool to release worker threads."""
@@ -889,6 +892,12 @@ class ExtractorRunner:
                 self._journal.record_metric(endpoint_name, duration, rows)
                 self._circuit_breaker.record_success(endpoint_name)
                 self._latency.record(endpoint_name, duration)
+                self._latency_check_counter += 1
+                if self._latency_check_counter % self._latency_check_interval == 0:
+                    slow = self._latency.slowest_endpoints(top_n=3, threshold=30.0)
+                    if slow:
+                        slow_str = ", ".join(f"{ep}={p95:.0f}s" for ep, p95 in slow)
+                        logger.warning("slow endpoints: {}", slow_str)
                 if isolated_scope == "global":
                     new_rate = self._adaptive.record_success()
                     if new_rate is not None:

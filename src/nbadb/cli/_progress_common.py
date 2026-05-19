@@ -170,6 +170,9 @@ class RunSummary:
     patterns: list[dict[str, object]] = field(default_factory=list)
     totals: dict[str, int] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    discovery_duration: float = 0.0
+    extraction_duration: float = 0.0
+    transform_duration: float = 0.0
 
 
 # ── utility functions ─────────────────────────────────────

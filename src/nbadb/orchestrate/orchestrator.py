@@ -90,6 +90,9 @@ class PipelineResult:
     failed_loads: int = 0
     skipped_extractions: int = 0
     errors: list[str] = field(default_factory=list)
+    discovery_duration: float = 0.0
+    extraction_duration: float = 0.0
+    transform_duration: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +141,7 @@ class _DiscoveryService(Protocol):
         seasons: list[str],
         on_progress: _ProgressReporter | None = None,
         season_types: list[str] | None = None,
+        known_combos: dict[tuple[str, str], pl.DataFrame] | None = None,
     ) -> GameDiscoveryResult: ...
 
     async def discover_game_dates(self, game_log_df: pl.DataFrame) -> list[str]: ...
@@ -231,6 +235,9 @@ class Orchestrator:
         *,
         include_exhausted: bool = False,
         include_abandoned: bool = False,
+        discovery_duration: float = 0.0,
+        extraction_duration: float = 0.0,
+        transform_duration: float = 0.0,
     ) -> PipelineResult:
         """Assemble a PipelineResult from collected counters."""
         failed_kwargs: dict[str, bool] = {}
@@ -248,6 +255,9 @@ class Orchestrator:
         result.failed_extractions = len(failed)
         result.failed_loads = failed_loads
         result.duration_seconds = time.perf_counter() - start_time
+        result.discovery_duration = discovery_duration
+        result.extraction_duration = extraction_duration
+        result.transform_duration = transform_duration
         result.errors = errors
         return result
 
@@ -528,6 +538,7 @@ class Orchestrator:
                     else []
                 )
                 game_log_df = cached_game_log
+                bound_log.info("discovery cache HIT: games ({})", len(game_ids))
                 if pp is not None:
                     pp.log_discovery("games", len(game_ids))
                 if include_dates:
@@ -541,12 +552,24 @@ class Orchestrator:
                 else:
                     game_dates = []
             else:
+                # Load any per-combo frames that were persisted in a prior partial
+                # discovery run.  Passing them as ``known_combos`` lets the discovery
+                # service skip those combos and only fetch what is still missing,
+                # making each resume incrementally cheaper.
+                known_combo_frames = artifacts.load_game_log_partial(game_scope)
+                if known_combo_frames:
+                    bound_log.info(
+                        "discovery partial cache: {} of {} combos already cached",
+                        len(known_combo_frames),
+                        len(seasons) * len(resolved_season_types),
+                    )
                 game_index = len(discovery_tasks)
                 discovery_tasks.append(
                     discovery.discover_game_ids_result(
                         seasons,
                         on_progress=pp,
                         season_types=season_types,
+                        known_combos=known_combo_frames if known_combo_frames else None,
                     )
                 )
                 game_ids = []
@@ -567,6 +590,7 @@ class Orchestrator:
             cached_player_ids = artifacts.load_ids(player_scope)
             if cached_player_ids:
                 player_ids = _apply_player_shard(cached_player_ids)
+                bound_log.info("discovery cache HIT: players ({})", len(player_ids))
                 if pp is not None:
                     pp.log_discovery("players", len(player_ids))
             else:
@@ -585,6 +609,7 @@ class Orchestrator:
             cached_team_ids = artifacts.load_ids(team_scope)
             if cached_team_ids:
                 team_ids = cached_team_ids
+                bound_log.info("discovery cache HIT: teams ({})", len(team_ids))
                 if pp is not None:
                     pp.log_discovery("teams", len(team_ids))
             else:
@@ -942,6 +967,9 @@ class Orchestrator:
 
         bound_log = cast("_BoundLogger", logger.bind(run_mode="init"))
         t0 = time.perf_counter()
+        t_discovery: float = 0.0
+        t_extraction: float = 0.0
+        t_transform: float = 0.0
 
         db, journal = self._init_db()
         async with self._build_runner(journal) as runner:
@@ -951,6 +979,26 @@ class Orchestrator:
                 if pp is not None:
                     s = journal.resume_summary()
                     pp.log_resume_context(s["done"], s["failed"], s["total_rows"])
+
+            # Surface extraction progress store recovery context
+            progress_store = self._extraction_progress()
+            if progress_store.is_available():
+                progress_dir = (
+                    self._settings.duckdb_path.with_name(
+                        f"{self._settings.duckdb_path.stem}.extraction-progress"
+                    )
+                    if self._settings.duckdb_path
+                    else None
+                )
+                if progress_dir and progress_dir.exists():
+                    slices = list(progress_dir.glob("*.json"))
+                    if slices:
+                        bound_log.info(
+                            "extraction progress store: {} slice(s) on disk (recovery context)",
+                            len(slices),
+                        )
+                        if pp is not None:
+                            pp.update_phase_info(f"{len(slices)} progress slices on disk")
 
             # -- 1. Entity discovery (parallel) --------------------
             seasons = season_range(start_season, end_season)
@@ -965,6 +1013,7 @@ class Orchestrator:
                 pp.start_phase("Discovery")
                 pp.update_phase_info(f"scanning {len(seasons)} seasons...")
 
+            t_discovery = time.perf_counter()
             game_ids, player_ids, team_ids, game_dates, game_log_df = await self._discover_entities(
                 discovery,
                 seasons,
@@ -984,9 +1033,11 @@ class Orchestrator:
                 season_types=season_types,
                 covered_pairs=set(player_team_result.covered_pairs),
             )
+            t_discovery = time.perf_counter() - t_discovery
 
             if pp is not None:
                 pp.complete_phase()
+            bound_log.info("discovery phase: {:.1f}s", t_discovery)
 
             bound_log.info(
                 "discovered: {} games, {} players, {} teams, {} dates, {} player-team seasons",
@@ -998,6 +1049,7 @@ class Orchestrator:
             )
 
             # -- 2. Extract by pattern ------------------------------
+            t_extraction = time.perf_counter()
             extraction = await self._extract_all_patterns(
                 runner,
                 seasons=seasons,
@@ -1015,14 +1067,19 @@ class Orchestrator:
                 persist_results=lambda frames: self._persist_staging_to_duckdb(db, frames),
                 retain_in_memory=False,
             )
+            t_extraction = time.perf_counter() - t_extraction
             raw = extraction.raw
+            bound_log.info("extraction phase: {:.1f}s", t_extraction)
 
             # -- 2b. Phase-B warehouse load from durable staged batches ----
             bound_log.info("loading durable staged extraction batches from DuckDB")
-            raw = self._load_staging_from_duckdb(db)
+            if pp is not None:
+                pp.update_phase_info("loading staging from DuckDB...")
+            raw = self._load_staging_from_duckdb(db, pp=pp)
             bound_log.info("loaded {} staging tables from DuckDB", len(raw))
 
             # -- 3. Transform + Load --------------------------------
+            t_transform = time.perf_counter()
             if pp is not None:
                 pp.start_phase("Transform & Load")
                 pp.update_phase_info(f"{len(raw)} staging tables")
@@ -1030,9 +1087,11 @@ class Orchestrator:
             tables_updated, rows_total, failed_loads = self._transform_and_load(
                 db, raw, journal, mode="replace"
             )
+            t_transform = time.perf_counter() - t_transform
             if pp is not None:
                 pp.update_phase_info(f"{tables_updated} tables, {rows_total:,} rows loaded")
                 pp.complete_phase()
+            bound_log.info("transform + load phase: {:.1f}s", t_transform)
 
             # -- 4. Summarize result --------------------------------
             # Abandon items that have exceeded the retry cap so they don't
@@ -1045,6 +1104,9 @@ class Orchestrator:
                 rows_total,
                 failed_loads,
                 journal=journal,
+                discovery_duration=t_discovery,
+                extraction_duration=t_extraction,
+                transform_duration=t_transform,
             )
             result.skipped_extractions = runner.skipped
             runner.log_latency_summary()
@@ -1058,6 +1120,12 @@ class Orchestrator:
             result.failed_extractions,
             abandoned,
             result.failed_loads,
+        )
+        bound_log.info(
+            "phase breakdown: discovery {:.1f}s → extraction {:.1f}s → transform {:.1f}s",
+            result.discovery_duration,
+            result.extraction_duration,
+            result.transform_duration,
         )
         journal.log_summary()
         return result
@@ -1688,6 +1756,7 @@ class Orchestrator:
         *,
         endpoints: list[str] | None = None,
         patterns: list[str] | None = None,
+        pp: _ProgressReporter | None = None,
     ) -> dict[str, pl.DataFrame]:
         """Read existing staging tables from DuckDB into memory.
 
@@ -1712,7 +1781,7 @@ class Orchestrator:
         from nbadb.core.types import validate_sql_identifier
 
         raw: dict[str, pl.DataFrame] = {}
-        for key in keys:
+        for i, key in enumerate(keys):
             try:
                 safe_key = validate_sql_identifier(key)
                 df = db.duckdb.execute(f"SELECT * FROM {safe_key}").pl()
@@ -1721,4 +1790,6 @@ class Orchestrator:
                     logger.debug("loaded staging {}: {} rows", key, df.shape[0])
             except duckdb.CatalogException:
                 pass  # Table doesn't exist yet
+            if pp is not None and (i + 1) % max(1, len(keys) // 20) == 0:
+                pp.update_phase_info(f"loading staging {i + 1}/{len(keys)}")
         return raw

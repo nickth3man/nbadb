@@ -186,3 +186,16 @@ class _LatencyTracker:
     def all_summaries(self) -> dict[str, dict[str, float]]:
         """Return latency summaries for all tracked endpoints."""
         return {ep: s for ep in self._data if (s := self.summary(ep)) is not None}
+
+    def slowest_endpoints(self, top_n: int = 5, threshold: float = 30.0) -> list[tuple[str, float]]:
+        """Return endpoints whose p95 exceeds *threshold*, sorted by p95 desc.
+
+        Returns list of ``(endpoint, p95)`` pairs.
+        """
+        candidates = []
+        for ep in self._data:
+            p95 = self.percentile(ep, 95)
+            if p95 is not None and p95 > threshold:
+                candidates.append((ep, p95))
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates[:top_n]
