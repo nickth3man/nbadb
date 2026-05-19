@@ -78,7 +78,7 @@ def test_init_season_start() -> None:
         result = runner.invoke(app, ["init", "--season-start", "2020"])
     assert result.exit_code == 0
     # Verify the season was forwarded to run_init
-    mock_cls.return_value.run_init.assert_awaited_once_with(start_season=2020, end_season=None)
+    mock_cls.return_value.run_init.assert_awaited_once_with(start_season=2020, end_season=None, season_types=None)
 
 
 def test_init_season_end() -> None:
@@ -86,7 +86,7 @@ def test_init_season_end() -> None:
         mock_cls.return_value.run_init = AsyncMock(return_value=_make_result())
         result = runner.invoke(app, ["init", "--season-start", "2020", "--season-end", "2024"])
     assert result.exit_code == 0
-    mock_cls.return_value.run_init.assert_awaited_once_with(start_season=2020, end_season=2024)
+    mock_cls.return_value.run_init.assert_awaited_once_with(start_season=2020, end_season=2024, season_types=None)
 
 
 def test_init_partial_failure_exits_zero_when_data_extracted() -> None:
