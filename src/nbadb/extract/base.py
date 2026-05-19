@@ -371,6 +371,46 @@ _RETRYABLE_ERROR_NAMES = frozenset(
     }
 )
 
+_NBA_API_HEADERS_PATCHED = False
+
+
+def patch_nba_api_stats_headers() -> None:
+    """Force browser-like headers onto nba_api's shared stats session.
+
+    stats.nba.com sometimes times out bot-looking sessions. Passing headers to
+    individual endpoint constructors is not enough because nba_api keeps shared
+    HTTP session state. Patch once at the extraction boundary so every stats
+    endpoint uses the same browser-like defaults.
+    """
+    global _NBA_API_HEADERS_PATCHED
+    if _NBA_API_HEADERS_PATCHED:
+        return
+
+    try:
+        from nba_api.library import http as base_http
+        from nba_api.stats.library import http as stats_http
+
+        from nbadb.core.types import NBA_HEADERS
+    except Exception as exc:  # pragma: no cover - defensive for optional import edges
+        logger.debug("nba_api header patch skipped: {}", exc)
+        return
+
+    headers = dict(NBA_HEADERS)
+    try:
+        stats_http.STATS_HEADERS = headers
+        stats_http.NBAStatsHTTP.headers = headers
+        stats_http.NBAStatsHTTP.set_session(None)
+        if hasattr(base_http.NBAHTTP, "set_session"):
+            base_http.NBAHTTP.set_session(None)
+        elif hasattr(base_http.NBAHTTP, "_session"):
+            base_http.NBAHTTP._session = None
+    except Exception as exc:  # pragma: no cover - defensive for nba_api internals
+        logger.warning("failed to patch nba_api stats headers: {}", exc)
+        return
+
+    _NBA_API_HEADERS_PATCHED = True
+    logger.debug("patched nba_api stats headers and reset shared sessions")
+
 
 def _extract_season_type(kwargs: dict[str, Any]) -> str | None:
     """Extract the season_type value from nba_api kwargs.
@@ -510,6 +550,7 @@ class BaseExtractor(ABC):
         """
         season_type = _extract_season_type(kwargs)
         self._inject_timeout(kwargs)
+        patch_nba_api_stats_headers()
         result = endpoint_cls(**kwargs)
         dfs = result.get_data_frames()
         converted = []
