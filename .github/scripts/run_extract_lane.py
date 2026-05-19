@@ -48,13 +48,18 @@ def descendant_pids(root_pid: int) -> set[int]:
 
 def terminate_tree(root_pid: int) -> None:
     descendants = descendant_pids(root_pid)
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
+    _killpg = getattr(os, "killpg", None)
+    _sigs = [signal.SIGINT, signal.SIGTERM]
+    if hasattr(signal, "SIGKILL"):
+        _sigs.append(signal.SIGKILL)  # type: ignore[attr-defined]
+    for i, sig in enumerate(_sigs):
         with suppress(ProcessLookupError):
-            os.killpg(root_pid, sig)
+            if _killpg is not None:
+                _killpg(root_pid, sig)
         for pid in descendants:
             with suppress(ProcessLookupError):
                 os.kill(pid, sig)
-        if sig is not signal.SIGKILL:
+        if i < len(_sigs) - 1:
             time.sleep(5)
 
 
@@ -98,15 +103,10 @@ def effective_timeout_seconds(timeout_seconds: int) -> int:
 def status_for_exit_code(exit_code: int) -> str:
     if exit_code == 0:
         return "complete"
-    if exit_code in {
-        124,
-        130,
-        137,
-        143,
-        -signal.SIGINT,
-        -signal.SIGTERM,
-        -signal.SIGKILL,
-    }:
+    _timeout_codes: set[int] = {124, 130, 137, 143, -signal.SIGINT, -signal.SIGTERM}
+    if hasattr(signal, "SIGKILL"):
+        _timeout_codes.add(-signal.SIGKILL)  # type: ignore[attr-defined]
+    if exit_code in _timeout_codes:
         return "extract-timeout"
     return "extract-error"
 

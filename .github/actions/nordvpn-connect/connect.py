@@ -11,6 +11,9 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Final
 
+_killpg = getattr(os, "killpg", None)
+_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)  # fallback to SIGTERM on Windows
+
 
 class ActionError(RuntimeError):
     def __init__(self, status: str, message: str) -> None:
@@ -68,12 +71,18 @@ def run_command(
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         with suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGTERM)
+            if _killpg is not None:
+                _killpg(process.pid, signal.SIGTERM)
+            else:
+                process.terminate()
         try:
             stdout, stderr = process.communicate(timeout=5)
         except subprocess.TimeoutExpired:
             with suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
+                if _killpg is not None:
+                    _killpg(process.pid, _SIGKILL)
+                else:
+                    process.kill()
             stdout, stderr = process.communicate(timeout=5)
         raise subprocess.TimeoutExpired(
             cmd=cmd,
@@ -228,12 +237,18 @@ class NordVpnConnectAction:
     def cleanup_openvpn(self) -> None:
         if self.openvpn_process is not None:
             with suppress(ProcessLookupError):
-                os.killpg(self.openvpn_process.pid, signal.SIGTERM)
+                if _killpg is not None:
+                    _killpg(self.openvpn_process.pid, signal.SIGTERM)
+                else:
+                    self.openvpn_process.terminate()
             try:
                 self.openvpn_process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 with suppress(ProcessLookupError):
-                    os.killpg(self.openvpn_process.pid, signal.SIGKILL)
+                    if _killpg is not None:
+                        _killpg(self.openvpn_process.pid, _SIGKILL)
+                    else:
+                        self.openvpn_process.kill()
                 with suppress(subprocess.TimeoutExpired):
                     self.openvpn_process.wait(timeout=5)
             self.openvpn_process = None

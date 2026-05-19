@@ -104,6 +104,7 @@ def test_pid_alive_returns_false_when_probe_times_out(
     assert action.pid_alive("12345") is False
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Uses Linux-only os.killpg")
 def test_cleanup_openvpn_terminates_foreground_process_group(
     monkeypatch: pytest.MonkeyPatch,
     runner_env: Path,
@@ -197,6 +198,7 @@ def test_finalize_removes_auth_file_when_tunnel_not_connected(runner_env: Path) 
     assert not action.auth_file.exists()
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Uses Linux-only os.killpg")
 def test_run_command_kills_timed_out_process_groups(
     runner_env: Path,
     tmp_path: Path,
