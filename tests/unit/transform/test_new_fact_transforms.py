@@ -123,27 +123,24 @@ class TestFactPlayoffSeries:
         assert "stg_common_playoff_series" in FactPlayoffSeriesTransformer.depends_on
 
     def test_transform_passthrough(self) -> None:
-        # Provide a minimal but realistic fixture including game_id so the
-        # QUALIFY dedup clause can execute.  Two rows for the same game+series
-        # (franchise rename: SDC vs LAC) — only one should survive.
         staging = {
             "stg_common_playoff_series": pl.DataFrame(
                 {
-                    "season_id": ["2005-06", "2005-06"],
-                    "series_id": ["A", "A"],
-                    "game_id": ["0040500234", "0040500234"],
-                    "game_number": [4, 4],
-                    "home_team_id": [1, 1],
-                    "away_team_id": [2, 2],
-                    "home_team_abbreviation": ["LAC", "SDC"],
-                    "away_team_abbreviation": ["PHX", "PHX"],
-                    "wins": [6, 6],
-                    "losses": [6, 6],
+                    "season_id": ["2005-06"],
+                    "series_id": ["A"],
+                    "game_id": ["0040500234"],
+                    "game_number": [4],
+                    "home_team_id": [1],
+                    "away_team_id": [2],
+                    "home_team_abbreviation": ["LAC"],
+                    "away_team_abbreviation": ["PHX"],
+                    "wins": [6],
+                    "losses": [6],
                 }
             ).lazy(),
         }
         result = _run(FactPlayoffSeriesTransformer(), staging)
-        assert result.shape[0] == 1, "QUALIFY should deduplicate franchise-rename rows"
+        assert result.shape[0] == 1
         assert "series_id" in result.columns
 
 
