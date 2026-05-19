@@ -13,6 +13,13 @@ class RawSynergyPlayTypesSchema(BaseSchema):
             "description": "NBA season identifier",
         },
     )
+    season_type: str | None = pa.Field(
+        nullable=True,
+        metadata={
+            "source": "query.season_type",
+            "description": "Queried NBA season type, injected by nbadb.",
+        },
+    )
     team_id: int | None = pa.Field(
         nullable=True,
         metadata={

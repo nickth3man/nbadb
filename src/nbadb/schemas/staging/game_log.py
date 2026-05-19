@@ -6,6 +6,13 @@ from nbadb.schemas.base import BaseSchema
 
 
 class StagingLeagueGameLogSchema(BaseSchema):
+    season_type: str | None = pa.Field(
+        nullable=True,
+        metadata={
+            "source": "query.season_type",
+            "description": "Season type injected from query context",
+        },
+    )
     season_id: str = pa.Field(
         nullable=False,
         metadata={
@@ -262,6 +269,13 @@ class StagingLeagueGameLogSchema(BaseSchema):
 
 
 class StagingPlayerGameLogSchema(BaseSchema):
+    season_type: str | None = pa.Field(
+        nullable=True,
+        metadata={
+            "source": "query.season_type",
+            "description": "Season type injected from query context",
+        },
+    )
     season_id: str = pa.Field(
         nullable=False,
         metadata={
@@ -480,6 +494,13 @@ class StagingPlayerGameLogSchema(BaseSchema):
 
 
 class StagingTeamGameLogSchema(BaseSchema):
+    season_type: str | None = pa.Field(
+        nullable=True,
+        metadata={
+            "source": "query.season_type",
+            "description": "Season type injected from query context",
+        },
+    )
     season_id: str = pa.Field(
         nullable=False,
         metadata={
