@@ -42,7 +42,13 @@ class FactScoreboardGameHeaderTransformer(SqlTransformer):
         "arena_name",
         "wh_status",
     ]
-    _SQL: ClassVar[str] = _select_sql("stg_scoreboard", _COLUMNS)
+    # Use DISTINCT — early-era games (1952-53) can appear twice in stg_scoreboard
+    # because the scoreboard endpoint is queried by multiple season filters that
+    # overlap for the first few seasons.
+    _SQL: ClassVar[str] = f"""
+        SELECT DISTINCT {_select_list(_COLUMNS)}
+        FROM stg_scoreboard
+    """
 
 
 class FactScoreboardConferenceStandingsTransformer(SqlTransformer):
@@ -132,7 +138,12 @@ class FactScoreboardLineScoreTransformer(SqlTransformer):
         "reb",
         "tov",
     ]
-    _SQL: ClassVar[str] = _select_sql("stg_scoreboard_line_score", _COLUMNS)
+    # Use DISTINCT — same early-era overlap as fact_scoreboard_game_header;
+    # games from 1952-53 All-Star format can appear twice in stg.
+    _SQL: ClassVar[str] = f"""
+        SELECT DISTINCT {_select_list(_COLUMNS)}
+        FROM stg_scoreboard_line_score
+    """
 
 
 class FactScoreboardSeriesStandingsTransformer(SqlTransformer):
@@ -180,7 +191,21 @@ class FactScoreboardTeamLeadersTransformer(SqlTransformer):
         "ast_player_name",
         "ast",
     ]
-    _SQL: ClassVar[str] = _select_sql("stg_scoreboard_team_leaders", _COLUMNS)
+    # Deduplicate by (game_id, team_id) — historical franchise renamings
+    # can cause the same game to appear with multiple team_city/abbreviation
+    # values; keep one canonical row per team per game.
+    _SQL: ClassVar[str] = """
+        SELECT
+            game_id, team_id, team_city, team_nickname, team_abbreviation,
+            pts_player_id, pts_player_name, pts,
+            reb_player_id, reb_player_name, reb,
+            ast_player_id, ast_player_name, ast
+        FROM stg_scoreboard_team_leaders
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY game_id, team_id
+            ORDER BY team_abbreviation
+        ) = 1
+    """
 
 
 class FactScoreboardTicketLinksTransformer(SqlTransformer):

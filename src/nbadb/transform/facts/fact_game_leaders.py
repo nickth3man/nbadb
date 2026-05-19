@@ -16,4 +16,8 @@ class FactGameLeadersTransformer(SqlTransformer):
             jersey_num, position, team_tricode,
             points, rebounds, assists
         FROM stg_game_leaders
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY game_id, team_id, leader_type, person_id
+            ORDER BY team_tricode
+        ) = 1
     """

@@ -13,8 +13,11 @@ def _select_list(columns: Sequence[str]) -> str:
 
 
 def _select_sql(source_table: str, columns: Sequence[str]) -> str:
+    # DISTINCT is applied at the module level to guard against exact-copy rows
+    # that arise when the same early-era game (pre-1970) is re-extracted across
+    # multiple pipeline runs via overlapping season filters.
     return f"""
-        SELECT
+        SELECT DISTINCT
             {_select_list(columns)}
         FROM {source_table}
     """

@@ -13,13 +13,15 @@ class FactTeamHistoricalTransformer(SqlTransformer):
         "stg_team_year_by_year_stats",
     ]
 
+    # DISTINCT eliminates exact-copy rows produced when the same source stg
+    # tables are re-loaded across multiple extraction passes.
     _SQL: ClassVar[str] = """
-        SELECT *, 'leaders' AS history_type
+        SELECT DISTINCT *, 'leaders' AS history_type
         FROM stg_team_historical_leaders
         UNION ALL BY NAME
-        SELECT *, 'year_by_year' AS history_type
+        SELECT DISTINCT *, 'year_by_year' AS history_type
         FROM stg_team_year_by_year
         UNION ALL BY NAME
-        SELECT *, 'year_by_year_stats' AS history_type
+        SELECT DISTINCT *, 'year_by_year_stats' AS history_type
         FROM stg_team_year_by_year_stats
     """
