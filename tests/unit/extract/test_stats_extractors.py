@@ -915,7 +915,7 @@ class TestCrossProductParameterHandling:
         assert result.get_column("person_id").to_list() == [1]
 
     @pytest.mark.asyncio
-    async def test_common_all_players_re_raises_json_error_for_season_scoped_requests(
+    async def test_common_all_players_falls_back_for_season_scoped_json_errors(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -925,9 +925,22 @@ class TestCrossProductParameterHandling:
             raise json.JSONDecodeError("bad json", "", 0)
 
         monkeypatch.setattr(ext, "_from_nba_api", _boom)
+        monkeypatch.setattr(
+            "nbadb.extract.stats.player_info.static_players.get_players",
+            lambda: [
+                {
+                    "id": 1,
+                    "full_name": "A One",
+                    "first_name": "A",
+                    "last_name": "One",
+                    "is_active": True,
+                }
+            ],
+        )
 
-        with pytest.raises(json.JSONDecodeError, match="bad json"):
-            await ext.extract(season="2024-25")
+        result = await ext.extract(season="2024-25")
+
+        assert result.get_column("person_id").to_list() == [1]
 
     @pytest.mark.asyncio
     async def test_common_all_players_re_raises_structural_error_for_unscoped_requests(

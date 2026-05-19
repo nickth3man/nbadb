@@ -268,17 +268,17 @@ class CommonAllPlayersExtractor(BaseExtractor):
         try:
             return self._from_nba_api(CommonAllPlayers, **kwargs)
         except Exception as exc:
-            if season is not None:
-                raise
             if isinstance(exc, json.JSONDecodeError):
                 logger.warning(
-                    "common_all_players: falling back to nba_api static players "
-                    "after JSONDecodeError"
+                    "common_all_players{}: falling back to nba_api static players "
+                    "after JSONDecodeError",
+                    f"({season})" if season is not None else "",
                 )
                 return self._fallback_from_static_players(is_only_current=is_only_current)
             if type(exc).__name__ in _UNSCOPED_COMMON_ALL_PLAYERS_FALLBACK_ERRORS:
                 logger.warning(
-                    "common_all_players: falling back to nba_api static players after {}",
+                    "common_all_players{}: falling back to nba_api static players after {}",
+                    f"({season})" if season is not None else "",
                     type(exc).__name__,
                 )
                 return self._fallback_from_static_players(is_only_current=is_only_current)
