@@ -312,17 +312,79 @@ class DataScanner:
             if dtype.upper() in self._NUMERIC_TYPES and not name.endswith("_id")
         ]
 
+    # Tables where a meaningful composite key cannot be inferred from
+    # standard naming conventions — typically shot-level or cumulative
+    # running-total tables, or rotation tables keyed on time ranges.
+    # Skip the duplicate-key check for these.
+    _SKIP_DUPLICATE_CHECK: frozenset[str] = frozenset(
+        {
+            "fact_shot_chart",
+            "analytics_shooting_efficiency",
+            "fact_cumulative_stats",
+            "fact_cumulative_stats_detail",
+            "fact_rotation",  # unique key requires in_time_real/out_time_real
+            # Zone columns (shot_zone_basic/area/range) are too domain-specific
+            # for the naming-convention key inference to pick up.
+            "agg_shot_zones",
+            # fact_team_history_detail is keyed on (team_id, yearfounded); the
+            # year column name doesn't follow a convention the scanner can infer.
+            "fact_team_history_detail",
+            # fact_draft_combine_detail has no season discriminator; player_id=-1
+            # is a sentinel that aggregates unidentified players across multiple
+            # combine years, so (player_id, detail_type) is not a unique key.
+            "fact_draft_combine_detail",
+        }
+    )
+
     def _infer_key_columns(self, table: str) -> list[str]:
-        """Infer likely primary-key columns from convention."""
+        """Infer likely primary-key columns from convention.
+
+        Candidate columns are checked in priority order.  Temporal
+        discriminators (season_year, season_type, season_id, season,
+        period) are appended after entity-ID columns so that per-season
+        or per-period tables do not generate spurious duplicate-key
+        findings.  ``person_id`` is included as an entity identifier
+        alongside ``player_id`` because some tables use that column name
+        instead.
+        """
         columns = self._get_columns(table)
         col_set = set(columns)
         keys: list[str] = []
-        for col in ("game_id", "player_id", "team_id", "event_num"):
+        # Entity / event identifiers — order matters for readability.
+        # ``official_id`` is included because bridge_game_official uses it
+        # as an entity key rather than ``person_id``.
+        for col in ("game_id", "player_id", "person_id", "team_id", "event_num", "official_id"):
             if col in col_set:
                 keys.append(col)
         if not keys:
             keys = [c for c in columns if c.endswith("_id")]
-        return keys[:4]
+        # Categorical discriminators that increase key granularity.
+        # ``award_type`` / ``detail_type`` differentiate rows in award and
+        # combine-detail tables that share the same entity ID + season.
+        # ``position`` differentiates multi-position rows in bridge tables.
+        for col in (
+            "leader_type",
+            "entity_type",
+            "stat_type",
+            "player_role",
+            "slot",
+            "group_id",
+            "award_type",
+            "detail_type",
+            "position",
+        ):
+            if col in col_set and col not in keys:
+                keys.append(col)
+        # SCD2 / validity discriminators
+        for col in ("valid_from", "is_current"):
+            if col in col_set and col not in keys:
+                keys.append(col)
+        # Temporal discriminators — append after entity IDs so compound
+        # keys correctly reflect per-season / per-period granularity
+        for col in ("season_year", "season_type", "season_id", "season", "period"):
+            if col in col_set and col not in keys:
+                keys.append(col)
+        return keys[:8]
 
     @staticmethod
     def _matches_filter(table: str, table_filter: str | None) -> bool:
@@ -708,7 +770,7 @@ class DataScanner:
 
             # 2. Duplicate key detection
             keys = self._infer_key_columns(table)
-            if keys:
+            if keys and table not in self._SKIP_DUPLICATE_CHECK:
                 self._report.checks_run += 1
                 cols_str = ", ".join(f'"{k}"' for k in keys)
                 try:
